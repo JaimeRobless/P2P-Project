@@ -7,6 +7,45 @@
 
 #define PORT 3490
 #define MAXLINE 4096
+#define CHUNK_SIZE 1024
+
+void download_file(char *filename, int filesize){
+    int num_chunks = (filesize + CHUNK_SIZE -1) / CHUNK_SIZE;
+    FILE *out = fopen("output.txt", "w");
+    fseek(out,filesize - 1,SEEK_SET);
+    fputc('\0',out);
+    fclose(out);
+    
+    for(int i = 0; i <= num_chunks;i++){
+        int start = i * CHUNK_SIZE;
+        int end = start + CHUNK_SIZE;
+        if(end > filesize) end = filesize;
+
+        int sock = socket(AF_INET,SOCK_STREAM, 0);
+
+        struct sockaddr_in server_addr;
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(PORT);
+        server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+        connect(sock,(struct sockaddr*)&server_addr,sizeof(server_addr));
+
+        char request[100];
+        sprintf(request, "GET %s %d %d",filename,start,end);
+
+        write(sock,request,strlen(request));
+
+        char buffer[1024];
+        int n = read(sock,buffer,1024);
+
+        FILE *out = fopen("output.txt","r");
+        fseek(out,start,SEEK_SET);
+        fwrite(buffer,1,n,out);
+        fclose(out);
+        close(sock);
+        printf("Downloaded chunk %d (%d-%d)\n",i, start,end);
+    }
+}
 
 void *peer_server(void *arg){
     int server_sock,client_sock;
@@ -50,7 +89,7 @@ void *peer_server(void *arg){
                 fclose(fp);
             }
         }
-        printf("Received from peer; %s\n", buffer);
+        printf("Received from peer: %s\n", buffer);
         close(client_sock);
     }
 }
@@ -58,47 +97,8 @@ void *peer_server(void *arg){
 int main(int argc, char *argv[]) {
     pthread_t tid;
     pthread_create(&tid, NULL, peer_server, NULL);
-
-    struct sockaddr_in server_addr;
-    int sockid;
-    char buffer[MAXLINE];
-
-    sockid = socket(AF_INET, SOCK_STREAM, 0);
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    if (connect(sockid, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        printf("Cannot connect to server\n");
-        exit(0);
-    }
-
-    printf("Enter command:\n");
-    fgets(buffer, MAXLINE, stdin);
-
-    write(sockid, buffer, strlen(buffer));
-
-    int n = read(sockid, buffer, MAXLINE);
-    buffer[n] = '\0';
-
-    printf("Server response:\n%s\n", buffer);
-
-    // Save file if GET
-    if (strstr(buffer, "REP GET BEGIN")) {
-        FILE *fp = fopen("downloaded.track", "w");
-
-        char *start = strstr(buffer, "REP GET BEGIN\n") + strlen("REP GET BEGIN\n");
-        char *end = strstr(buffer, "\nREP GET END");
-
-        if (start && end) {
-            fwrite(start, 1, end - start, fp);
-        }
-
-        fclose(fp);
-        printf("File saved as downloaded.track\n");
-    }
-
-    close(sockid);
+    sleep(1); // give server time to start
+     download_file("test.txt", 50); 
+     
     return 0;
 }
