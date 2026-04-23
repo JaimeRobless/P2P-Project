@@ -8,8 +8,57 @@
 #define PORT 3490
 #define MAXLINE 4096
 
+void *peer_server(void *arg){
+    int server_sock,client_sock;
+    struct sockaddr_in addr;
+    socklen_t addr_len= sizeof(addr);
+
+    server_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    bind(server_sock, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_sock, 5);
+
+    printf("Peer server is listenning...\n");
+
+    while(1){
+        client_sock = accept(server_sock,(struct sockaddr*)&addr, &addr_len);
+
+        char buffer[1024];
+        int n = read(client_sock, buffer, 1024);
+        buffer[n] = '\0';
+
+        if(strstr(buffer,"GET")){
+            char filename[100];
+            int start, end;
+
+            sscanf(buffer, "GET %s %d %d", filename, &start, &end);
+
+            if((end - start) > 1024){
+                write(client_sock, "<GET INVALID>\n", 15);
+
+            } else{
+                FILE *fp = fopen(filename, "r");
+                fseek(fp,start, SEEK_SET);
+
+                char chunk[1024];
+                int bytes = fread(chunk, 1, end - start, fp);
+                write(client_sock,chunk, bytes);
+                fclose(fp);
+            }
+        }
+        printf("Received from peer; %s\n", buffer);
+        close(client_sock);
+    }
+}
 
 int main(int argc, char *argv[]) {
+    pthread_t tid;
+    pthread_create(&tid, NULL, peer_server, NULL);
+
     struct sockaddr_in server_addr;
     int sockid;
     char buffer[MAXLINE];
