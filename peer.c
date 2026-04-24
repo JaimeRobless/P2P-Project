@@ -15,6 +15,64 @@ typedef struct {
     int end;
 } chunk_t;
 
+typedef struct {
+    char ip[50];
+    int port;
+    int start;
+    int end;
+    long timestamp;
+
+}peer_info;
+
+typedef struct {
+    char filename[100];
+    int filesize;
+    char md5[50];
+    peer_info peers[50];
+    int peer_count;
+
+}tracker_t;
+
+void parse_tracker(char *filename, tracker_t *tracker){
+    FILE *fp = fopen(filename, "r");
+    if(!fp){
+        printf("Error opening tracker file\n");
+        return;
+    }
+
+    char line[256];
+    tracker->peer_count = 0;
+    
+    while(fgets(line, sizeof(line), fp)){
+        // remove newline
+        line[strcspn(line, "\n")] = 0;
+
+        // skip comments
+        if(line[0] == '#' || strlen(line) == 0) continue;
+
+        if(strncmp(line, "Filename:", 9) == 0){
+            sscanf(line, "Filename: %s", tracker->filename);
+        }
+        else if(strncmp(line, "Filesize:", 9) == 0){
+            sscanf(line, "Filesize: %d", &tracker->filesize);
+        }
+        else if(strncmp(line, "MD5:", 4) == 0){
+            sscanf(line, "MD5: %s", tracker->md5);
+        }
+        else {
+            // peer line
+            peer_info *p = &tracker->peers[tracker->peer_count];
+
+            sscanf(line, "%[^:]:%d:%d:%d:%ld",
+                   p->ip, &p->port, &p->start, &p->end, &p->timestamp);
+
+            tracker->peer_count++;
+        }
+    }
+
+    fclose(fp);
+}
+
 void *download_chunk(void *arg){
     chunk_t *chunk = (chunk_t *)arg;
 
@@ -55,7 +113,7 @@ void download_file(char *filename, int filesize){
     fputc('\0',out);
     fclose(out);
     
-    for(int i = 0; i <= num_chunks;i++){
+    for(int i = 0; i < num_chunks;i++){
         int start = i * CHUNK_SIZE;
         int end = start + CHUNK_SIZE;
         if(end > filesize) end = filesize;
@@ -96,6 +154,10 @@ void *peer_server(void *arg){
 
         char buffer[1024];
         int n = read(client_sock, buffer, 1024);
+        if(n <= 0){
+            close(client_sock);
+            continue;
+        }
         buffer[n] = '\0';
 
         if(strstr(buffer,"GET")){
@@ -123,9 +185,41 @@ void *peer_server(void *arg){
 }
 
 int main(int argc, char *argv[]) {
-    pthread_t tid;
+/*    pthread_t tid;
     pthread_create(&tid, NULL, peer_server, NULL);
     sleep(1); // give server time to start
      download_file("test.txt", 50);
-    return 0;
+     tracker_t tracker;
+
+parse_tracker("test.track", &tracker);
+
+printf("File: %s\n", tracker.filename);
+printf("Size: %d\n", tracker.filesize);
+
+for(int i = 0; i < tracker.peer_count; i++){
+    printf("Peer %d: %s:%d [%d-%d]\n",
+        i,
+        tracker.peers[i].ip,
+        tracker.peers[i].port,
+        tracker.peers[i].start,
+        tracker.peers[i].end);
+}
+    return 0;*/
+    tracker_t tracker;
+
+parse_tracker("test.track", &tracker);
+
+printf("Filename: %s\n", tracker.filename);
+printf("Filesize: %d\n", tracker.filesize);
+printf("MD5: %s\n", tracker.md5);
+
+for(int i = 0; i < tracker.peer_count; i++){
+    printf("Peer %d: %s:%d [%d-%d] timestamp=%ld\n",
+        i,
+        tracker.peers[i].ip,
+        tracker.peers[i].port,
+        tracker.peers[i].start,
+        tracker.peers[i].end,
+        tracker.peers[i].timestamp);
+    }
 }
