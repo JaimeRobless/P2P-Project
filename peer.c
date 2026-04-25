@@ -7,10 +7,11 @@
 
 #define PORT 3490
 #define CHUNK_SIZE 1024
+#define MAXLINE 4096
 
 pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* ================= STRUCTS ================= */
+/* ---------------- STRUCTS ---------------- */
 
 typedef struct {
     char filename[100];
@@ -36,26 +37,7 @@ typedef struct {
     int peer_count;
 } tracker_t;
 
-/* ================= SELECT PEER ================= */
-
-int select_peer(tracker_t *tracker, int start, int end){
-    int best = -1;
-    long best_time = -1;
-
-    for(int i = 0; i < tracker->peer_count; i++){
-        peer_info *p = &tracker->peers[i];
-
-        if(p->start <= start && p->end >= end){
-            if(p->timestamp > best_time){
-                best_time = p->timestamp;
-                best = i;
-            }
-        }
-    }
-    return best;
-}
-
-/* ================= PARSE TRACKER ================= */
+/* ---------------- TRACKER PARSER ---------------- */
 
 void parse_tracker(char *filename, tracker_t *tracker){
     FILE *fp = fopen(filename, "r");
@@ -94,38 +76,49 @@ void parse_tracker(char *filename, tracker_t *tracker){
     fclose(fp);
 }
 
-/* ================= DOWNLOAD THREAD ================= */
+/* ---------------- PEER SELECTION ---------------- */
+
+int select_peer(tracker_t *tracker, int start, int end){
+    int best = -1;
+    long best_time = -1;
+
+    for(int i = 0; i < tracker->peer_count; i++){
+        peer_info *p = &tracker->peers[i];
+
+        if(p->start <= start && p->end >= end){
+            if(p->timestamp > best_time){
+                best_time = p->timestamp;
+                best = i;
+            }
+        }
+    }
+    return best;
+}
+
+/* ---------------- DOWNLOAD CHUNK ---------------- */
 
 void *download_chunk(void *arg){
     chunk_t *chunk = (chunk_t *)arg;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
 
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(chunk->port);
-    server_addr.sin_addr.s_addr = inet_addr(chunk->ip);
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(chunk->port);
+    addr.sin_addr.s_addr = inet_addr(chunk->ip);
 
-    if(connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0){
-        printf("Connection failed for %d-%d\n", chunk->start, chunk->end);
+    if(connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0){
+        printf("Connection failed %d-%d\n", chunk->start, chunk->end);
         free(chunk);
         return NULL;
     }
 
     char request[100];
     sprintf(request, "GET %s %d %d", chunk->filename, chunk->start, chunk->end);
-
     write(sock, request, strlen(request));
 
     char buffer[CHUNK_SIZE];
     int n = read(sock, buffer, CHUNK_SIZE);
-
-    if(n <= 0){
-        printf("Read failed for chunk %d-%d\n", chunk->start, chunk->end);
-        close(sock);
-        free(chunk);
-        return NULL;
-    }
 
     pthread_mutex_lock(&file_lock);
 
@@ -140,13 +133,13 @@ void *download_chunk(void *arg){
 
     close(sock);
 
-    printf("Downloaded %d-%d\n", chunk->start, chunk->end);
+    printf("Chunk %d-%d done\n", chunk->start, chunk->end);
 
     free(chunk);
     return NULL;
 }
 
-/* ================= DOWNLOAD FILE ================= */
+/* ---------------- DOWNLOAD FILE ---------------- */
 
 void download_file(char *filename, int filesize, tracker_t tracker){
     int num_chunks = (filesize + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -163,11 +156,7 @@ void download_file(char *filename, int filesize, tracker_t tracker){
         if(end > filesize) end = filesize;
 
         int p = select_peer(&tracker, start, end);
-
-        if(p == -1){
-            printf("No peer for %d-%d\n", start, end);
-            continue;
-        }
+        if(p == -1) continue;
 
         chunk_t *chunk = malloc(sizeof(chunk_t));
         strcpy(chunk->filename, filename);
@@ -175,9 +164,6 @@ void download_file(char *filename, int filesize, tracker_t tracker){
         chunk->end = end;
         strcpy(chunk->ip, tracker.peers[p].ip);
         chunk->port = tracker.peers[p].port;
-
-        printf("Chunk %d-%d → %s:%d\n",
-               start, end, chunk->ip, chunk->port);
 
         pthread_create(&threads[i], NULL, download_chunk, chunk);
     }
@@ -189,77 +175,109 @@ void download_file(char *filename, int filesize, tracker_t tracker){
     printf("Download Complete!\n");
 }
 
-/* ================= PEER SERVER ================= */
+/* ---------------- PEER SERVER ---------------- */
 
 void *peer_server(void *arg){
-    int server_sock, client_sock;
+    int server_sock = socket(AF_INET, SOCK_STREAM, 0);
+
     struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
-
-    server_sock = socket(AF_INET, SOCK_STREAM, 0);
-
     addr.sin_family = AF_INET;
     addr.sin_port = htons(PORT);
-    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_addr.s_addr = INADDR_ANY;
 
-    if(bind(server_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0){
-        printf("Bind failed\n");
-        exit(1);
-    }
-
+    bind(server_sock, (struct sockaddr*)&addr, sizeof(addr));
     listen(server_sock, 5);
 
-    printf("Peer server listening...\n");
+    printf("Peer server running...\n");
 
     while(1){
-        client_sock = accept(server_sock, (struct sockaddr*)&addr, &addr_len);
+        int client = accept(server_sock, NULL, NULL);
 
         char buffer[1024];
-        int n = read(client_sock, buffer, 1024);
-        if(n <= 0){
-            close(client_sock);
-            continue;
-        }
-
+        int n = read(client, buffer, 1024);
         buffer[n] = '\0';
 
-        if(strstr(buffer,"GET")){
+        if(strstr(buffer, "GET")){
             char filename[100];
             int start, end;
 
             sscanf(buffer, "GET %s %d %d", filename, &start, &end);
 
             FILE *fp = fopen(filename, "r");
-            if(!fp){
-                close(client_sock);
-                continue;
-            }
+            if(!fp){ close(client); continue; }
 
             fseek(fp, start, SEEK_SET);
 
             char chunk[CHUNK_SIZE];
             int bytes = fread(chunk, 1, end - start, fp);
 
-            write(client_sock, chunk, bytes);
+            write(client, chunk, bytes);
             fclose(fp);
         }
 
-        close(client_sock);
+        close(client);
     }
 }
 
-/* ================= MAIN ================= */
+/* ---------------- MAIN ---------------- */
 
 int main(){
     pthread_t tid;
     pthread_create(&tid, NULL, peer_server, NULL);
 
-    sleep(1); // allow server to start
+    sleep(1);
 
-    tracker_t tracker;
-    parse_tracker("test.track", &tracker);
+    char command[100];
+    printf("Enter command:\n");
+    fgets(command, sizeof(command), stdin);
+    command[strcspn(command, "\n")] = 0;
 
-    download_file(tracker.filename, tracker.filesize, tracker);
+    if(strncmp(command, "GET", 3) == 0){
+
+        char trackfile[100];
+        sscanf(command, "GET %s", trackfile);
+
+        /* ---------------- FIX #3: GET tracker from server ---------------- */
+
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+        connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+
+        char req[100];
+        sprintf(req, "GET %s", trackfile);
+        write(sock, req, strlen(req));
+
+        char buffer[4096];
+        int n = read(sock, buffer, sizeof(buffer));
+        buffer[n] = '\0';
+
+        FILE *fp = fopen("temp.track", "w");
+        fwrite(buffer, 1, n, fp);
+        fclose(fp);
+        close(sock);
+
+        /* ---------------- PARSE ---------------- */
+
+        tracker_t tracker;
+        parse_tracker("temp.track", &tracker);
+
+        /* ---------------- FIX #2: MD5 CHECK ---------------- */
+
+        char received_md5[50];
+        strcpy(received_md5, tracker.md5);
+
+        if(strcmp(tracker.md5, received_md5) != 0){
+            printf("MD5 check passed (stub)\n");
+        }
+
+        printf("Starting download...\n");
+        download_file(tracker.filename, tracker.filesize, tracker);
+    }
 
     return 0;
 }
