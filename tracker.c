@@ -7,96 +7,53 @@
 #define PORT 3490
 #define MAXLINE 4096
 
-int sockid, sock_child, clilen;
-char read_msg[MAXLINE];
-
-void handle_list_req(int sock) {
-    char response[] =
-        "REP LIST 1\n"
-        "1 testfile 100 dummyMD5\n"
-        "REP LIST END\n";
-    write(sock, response, strlen(response));
-}
-
-void handle_get_req(int sock, char *fname) {
+void handle_get(int sock, char *file){
     FILE *fp = fopen("testfile.track", "r");
-    if (!fp) {
-        write(sock, "ERROR\n", 6);
+    if(!fp){
+        write(sock, "<REP GET BEGIN>\nERROR\n<REP GET END dummy>\n", 45);
         return;
     }
 
-    char file_data[MAXLINE];
-    fread(file_data, 1, MAXLINE, fp);
+    char data[MAXLINE];
+    int n = fread(data, 1, MAXLINE, fp);
     fclose(fp);
 
-    char response[MAXLINE * 2];
+    char response[MAXLINE*2];
     sprintf(response,
-        "REP GET BEGIN\n%s\nREP GET END dummyMD5\n",
-        file_data);
+        "<REP GET BEGIN>\n%.*s\n<REP GET END dummyMD5>\n",
+        n, data);
 
     write(sock, response, strlen(response));
 }
 
-void handle_createtracker_req(int sock) {
-    FILE *fp = fopen("testfile.track", "w");
-    fprintf(fp, "Filename: testfile\nFilesize: 100\nMD5: dummy\n");
-    fclose(fp);
+void handler(int sock){
+    char buffer[MAXLINE];
+    int n = read(sock, buffer, MAXLINE);
+    buffer[n] = '\0';
 
-    write(sock, "createtracker succ\n", 20);
-}
-
-void handle_updatetracker_req(int sock) {
-    write(sock, "updatetracker succ\n", 20);
-}
-
-void peer_handler(int sock_child) {
-    int length = read(sock_child, read_msg, MAXLINE);
-    read_msg[length] = '\0';
-
-    printf("Received: %s\n", read_msg);
-
-    if (strstr(read_msg, "REQ LIST")) {
-        handle_list_req(sock_child);
-    }
-    else if (strstr(read_msg, "GET")) {
-        handle_get_req(sock_child, "testfile.track");
-    }
-    else if (strstr(read_msg, "createtracker")) {
-        handle_createtracker_req(sock_child);
-    }
-    else if (strstr(read_msg, "updatetracker")) {
-        handle_updatetracker_req(sock_child);
+    if(strstr(buffer, "GET")){
+        char fname[100];
+        sscanf(buffer, "GET %s", fname);
+        handle_get(sock, fname);
     }
 }
 
-int main() {
-    pid_t pid;
-    struct sockaddr_in server_addr, client_addr;
+int main(){
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
 
-    sockid = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    bind(sock, (struct sockaddr*)&addr, sizeof(addr));
+    listen(sock, 5);
 
-    bind(sockid, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    printf("Tracker running...\n");
 
-    printf("Tracker SERVER READY...\n");
-
-    listen(sockid, 5);
-
-    clilen = sizeof(client_addr);
-
-    while (1) {
-        sock_child = accept(sockid, (struct sockaddr *)&client_addr, (socklen_t *)&clilen);
-
-        if ((pid = fork()) == 0) {
-            close(sockid);
-            peer_handler(sock_child);
-            close(sock_child);
-            exit(0);
-        }
-
-        close(sock_child);
+    while(1){
+        int client = accept(sock, NULL, NULL);
+        handler(client);
+        close(client);
     }
 }
